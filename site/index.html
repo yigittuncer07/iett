@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Istanbul Bus Times</title>
+<style>
+  :root { --bg:#fafaf8; --fg:#1c1c1a; --muted:#6f6f69; --line:#e4e4de; --accent:#0a5c8f; --chip:#fff; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececE8; --muted:#97978f; --line:#2c2c2a; --accent:#6bb7e8; --chip:#1f1f1d; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:1.25rem; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:.85rem; margin:0 0 16px; }
+  input, select { width:100%; padding:10px 12px; font:inherit; color:var(--fg); background:var(--chip); border:1px solid var(--line); border-radius:8px; }
+  #results { list-style:none; margin:6px 0 0; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--chip); }
+  #results li { padding:10px 12px; cursor:pointer; border-bottom:1px solid var(--line); }
+  #results li:last-child { border:0; }
+  #results b { color:var(--accent); margin-right:6px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0; }
+  .chip { padding:7px 12px; border:1px solid var(--line); border-radius:999px; background:var(--chip); color:var(--fg); font:inherit; font-size:.9rem; cursor:pointer; }
+  .chip[aria-pressed=true] { background:var(--accent); border-color:var(--accent); color:var(--bg); }
+  .stops { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:12px 0; }
+  .stops label { font-size:.75rem; color:var(--muted); }
+  .note { color:var(--muted); font-size:.85rem; margin:8px 0; }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:.92rem; }
+  th { text-align:right; font-weight:500; color:var(--muted); font-size:.75rem; padding:6px 6px; border-bottom:1px solid var(--line); }
+  td { text-align:right; padding:9px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  td.n { color:var(--muted); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Istanbul Bus Times</h1>
+  <p class="sub">How long each scheduled departure actually took: plain averages of logged trips, last 28 days.</p>
+
+  <input id="search" type="search" placeholder="Line code or name, e.g. 500T" autocomplete="off">
+  <ul id="results" hidden></ul>
+
+  <section id="line" hidden>
+    <h2 id="lineTitle" style="font-size:1rem;margin:16px 0 0"></h2>
+    <div class="row" id="dirs"></div>
+    <div class="row" id="days"></div>
+    <div class="stops">
+      <div><label for="stopA">From stop (optional)</label><select id="stopA"></select></div>
+      <div><label for="stopB">To stop</label><select id="stopB"></select></div>
+    </div>
+    <p class="note" id="note" hidden></p>
+    <div class="tablewrap"><table id="table"></table></div>
+  </section>
+</main>
+
+<script>
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const safe = code => code.replace(/[^A-Za-z0-9_-]/g, "_");
+const $ = id => document.getElementById(id);
+let lines = [], line = null;
+const state = { dir: null, weekday: istanbulWeekday(), a: null, b: null };
+
+function istanbulWeekday() {
+  const name = new Date().toLocaleDateString("en-US", { timeZone: "Europe/Istanbul", weekday: "short" });
+  return DAY_NAMES.indexOf(name);
+}
+const weekdayOf = date => new Date(date + "T12:00:00").getDay();
+const secs = hms => { const [h, m, s = 0] = hms.split(":").map(Number); return h * 3600 + m * 60 + s; };
+const clock = s => { s = ((Math.round(s) % 86400) + 86400) % 86400; return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}`; };
+const mins = s => `${Math.round(s / 60)} min`;
+
+/* THE AVERAGING FUNCTION. Plain averages of logged trips, nothing else.
+   Full route: duration = end - start. With stops a and b (indexes): stops[b] - stops[a], skipping trips with a null.
+   Groups trips by planned departure time and returns one row per group. */
+function timetableRows(trips, dir, weekday, a, b) {
+  const groups = {};
+  for (const t of trips) {
+    if (t.dir !== dir || weekdayOf(t.date) !== weekday) continue;
+    let duration, clockAtStart;
+    if (a == null) {
+      duration = (secs(t.end) - secs(t.start) + 86400) % 86400; // trips can end after midnight
+      clockAtStart = secs(t.start);
+    } else {
+      if (!t.stops || t.stops[a] == null || t.stops[b] == null) continue;
+      duration = t.stops[b] - t.stops[a];
+      clockAtStart = secs(t.start) + t.stops[a];
+    }
+    (groups[t.planned] ??= []).push({ duration, clockAtStart });
+  }
+  const avg = xs => xs.reduce((sum, x) => sum + x, 0) / xs.length;
+  return Object.keys(groups).sort().map(planned => {
+    const durations = groups[planned].map(x => x.duration);
+    return { planned, avg: avg(durations), min: Math.min(...durations), max: Math.max(...durations),
+             n: durations.length, clockAtA: avg(groups[planned].map(x => x.clockAtStart)) };
+  });
+}
+
+function dirLabel(d) {
+  const stops = line.directions[d].stops;
+  return "→ " + (stops.length ? stops[stops.length - 1][1] : d);
+}
+
+function render() {
+  const stops = line.directions[state.dir].stops;
+  const hasStopData = line.trips.some(t => t.dir === state.dir && t.stops);
+  const useStops = state.a != null && state.b != null && hasStopData;
+
+  $("dirs").replaceChildren(...Object.keys(line.directions).sort().map(d =>
+    chip(dirLabel(d), state.dir === d, () => { state.dir = d; state.a = state.b = null; render(); })));
+  $("days").replaceChildren(...[1, 2, 3, 4, 5, 6, 0].map(w =>
+    chip(DAY_NAMES[w], state.weekday === w, () => { state.weekday = w; render(); })));
+
+  fillStops($("stopA"), stops, 0, stops.length - 1, state.a);
+  fillStops($("stopB"), stops, (state.a ?? -1) + 1, stops.length, state.b);
+  $("stopA").parentElement.parentElement.hidden = !stops.length;
+
+  const note = $("note");
+  note.hidden = true;
+  if (state.a != null && state.b != null && !hasStopData) {
+    note.textContent = "No stop-level data yet for this line; showing full route.";
+    note.hidden = false;
+  }
+  const rows = timetableRows(line.trips, state.dir, state.weekday, useStops ? state.a : null, useStops ? state.b : null);
+  const head = useStops
+    ? ["Departs", `At ${stops[state.a][1]}`, "Avg A→B", "Min – Max", "n"]
+    : ["Departs", "Avg duration", "Arrives", "Min – Max", "n"];
+  const body = rows.map(r => [r.planned, useStops ? clock(r.clockAtA) : mins(r.avg),
+    useStops ? mins(r.avg) : clock(secs(r.planned + ":00") + r.avg), `${Math.round(r.min / 60)} – ${Math.round(r.max / 60)}`, r.n]);
+  $("table").innerHTML = "<thead><tr>" + head.map(h => `<th>${esc(h)}</th>`).join("") + "</tr></thead><tbody>" +
+    (body.length ? body.map(r => "<tr>" + r.map((c, i) => `<td${i === 4 ? ' class="n"' : ""}>${esc(String(c))}</td>`).join("") + "</tr>").join("")
+      : `<tr><td colspan="5" style="text-align:center;color:var(--muted)">No trips logged for this day.</td></tr>`) + "</tbody>";
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function chip(text, pressed, onclick) {
+  const b = document.createElement("button");
+  b.className = "chip"; b.textContent = text; b.setAttribute("aria-pressed", pressed); b.onclick = onclick;
+  return b;
+}
+
+function fillStops(select, stops, from, to, selected) {
+  select.replaceChildren(new Option("Whole route", ""));
+  for (let i = from; i < to; i++) select.add(new Option(`${i + 1}. ${stops[i][1]}`, i));
+  select.value = selected ?? "";
+}
+
+$("stopA").onchange = e => { state.a = e.target.value === "" ? null : +e.target.value; if (state.b != null && state.b <= state.a) state.b = null; render(); };
+$("stopB").onchange = e => { state.b = e.target.value === "" ? null : +e.target.value; render(); };
+
+async function openLine(code) {
+  $("results").hidden = true;
+  const res = await fetch(`data/lines/${safe(code)}.json`);
+  line = await res.json();
+  state.dir = Object.keys(line.directions).sort()[0];
+  state.a = state.b = null;
+  $("lineTitle").textContent = `${line.code} · ${line.name}`;
+  $("line").hidden = false;
+  render();
+}
+
+$("search").addEventListener("input", e => {
+  const q = e.target.value.trim().toLocaleLowerCase("tr");
+  const hits = q ? lines.filter(l => l.code.toLocaleLowerCase("tr").startsWith(q) || l.name.toLocaleLowerCase("tr").includes(q)).slice(0, 8) : [];
+  $("results").replaceChildren(...hits.map(l => {
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${esc(l.code)}</b>${esc(l.name)}`;
+    li.onclick = () => { $("search").value = l.code; openLine(l.code); };
+    return li;
+  }));
+  $("results").hidden = !hits.length;
+});
+
+fetch("data/lines.json").then(r => r.json()).then(l => { lines = l; });
+</script>
+</body>
+</html>

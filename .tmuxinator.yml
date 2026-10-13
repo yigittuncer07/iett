@@ -1,0 +1,11 @@
+name: iett
+root: <%= Dir.pwd %>
+
+windows:
+  - project:
+      layout: even-vertical
+      panes:
+        - collector: python3 -u collect.py
+        - web: python3 -m http.server 8000 --directory site
+        # Build now, then once a day; gzip pings older than a day first.
+        - build: while true; do find data/pings -mtime +0 -name '*.csv' -exec gzip {} \; ; python3 build.py; sleep 86400; done
