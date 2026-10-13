@@ -2,4 +2,5 @@ data/
 site/data/
 site/data.tmp/
 site/data.old/
+deploy/run/
 __pycache__/

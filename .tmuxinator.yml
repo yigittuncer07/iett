@@ -1,11 +1,10 @@
 name: iett
-root: <%= Dir.pwd %>
+root: ~/projects/iett
 
 windows:
-  - project:
-      layout: even-vertical
-      panes:
-        - collector: python3 -u collect.py
-        - web: python3 -m http.server 8000 --directory site
-        # Build now, then once a day; gzip pings older than a day first.
-        - build: while true; do find data/pings -mtime +0 -name '*.csv' -exec gzip {} \; ; python3 build.py; sleep 86400; done
+  - collector: while true; do python3 collect.py; echo "collector exited, restarting"; sleep 10; done
+  - ingest: python3 ingest.py 31; python3 publish.py; while true; do python3 ingest.py; sleep 1h; done
+  - publish: while true; do sleep 6h; python3 publish.py; find data/pings -name '*.csv' -mtime +0 -exec gzip {} \; ; done
+  - web: mkdir -p deploy/run && nginx -p "$PWD" -c deploy/nginx.conf -g 'daemon off;'
+  # Cloudflare tunnel: put your tunnel name in, or delete this window.
+  - tunnel: cloudflared tunnel run <TUNNEL_NAME>

@@ -1,50 +1,34 @@
 # Istanbul Bus Times
 
-Static site showing how long each scheduled IETT departure actually took, as plain averages of logged trips over the last 28 days. Optionally filtered to a start and end stop. See `spec.md`.
+Static site showing how long each scheduled IETT departure actually took, as plain averages of logged trips over up to 12 months, optionally between two chosen stops. See `spec.md`.
 
-Python 3, standard library only.
+Python 3, standard library only. Needs `tmux`, `tmuxinator` and `nginx` (and `cloudflared` if you use the tunnel window).
 
 | File | Purpose |
 |---|---|
-| `iett.py` | SOAP helper: `call(service, method, params)` |
+| `iett.py` | SOAP helper: `call(service, method, params)`, `fetch_stops()` |
 | `collect.py` | Long-running: fleet positions every 60s into `data/pings/` |
-| `build.py` | Daily: fetch archive, stops and names; match trips to stops; write `site/data/` |
-| `site/` | Static frontend (`index.html`) plus generated `site/data/` |
+| `ingest.py [days_back]` | One pass: fetch trip archive, match stops, write `data/trips/` and `data/days/` |
+| `publish.py` | Write `site/data/` (line names, schedules, route changes, month files) |
+| `site/` | Static frontend; `site/data/` is generated |
+| `deploy/nginx.conf` | Hardened nginx config (listens on 127.0.0.1:8080 only) |
+| `.tmuxinator.yml` | Runs everything |
 
-## Deploy
+## Run
 
-Start the collector first: stop-level data only exists from the day collection begins.
+Everything runs from `.tmuxinator.yml`, as your normal user (never root).
 
-### Collector (systemd)
+1. Set `root:` in `.tmuxinator.yml` to the repo path, and put your tunnel name in the `tunnel` window (or delete it).
+2. From the repo directory: `tmuxinator local` (or, on older versions, symlink the file to `~/.config/tmuxinator/iett.yml` and run `tmuxinator start iett`).
 
-Edit `User=` and the paths in `collect.service`, then:
+| Window | Does |
+|---|---|
+| `collector` | Fleet positions every minute, restarted if it exits |
+| `ingest` | Ingests the last 31 days, publishes (site is live), then backfills up to a year in the background, hourly |
+| `publish` | Republishes every 6 hours and gzips old ping files |
+| `web` | nginx on 127.0.0.1:8080 serving `site/` |
+| `tunnel` | cloudflared pointing at 127.0.0.1:8080 |
 
-```
-sudo cp collect.service /etc/systemd/system/
-sudo systemctl enable --now collect
-```
+tmux sessions don't survive a reboot: after a reboot, run tmuxinator again.
 
-### Cron
-
-Adjust the repo path. `build.py` reads both `.csv` and `.csv.gz` pings.
-
-```
-30 4 * * * cd /home/jeff/projects/iett && find data/pings -mtime +0 -name '*.csv' -exec gzip {} \;
-0 5 * * *  cd /home/jeff/projects/iett && python3 build.py >> build.log 2>&1
-```
-
-The first `build.py` run backfills 28 days of the trip archive (about 20 MB per day, several minutes). Days whose archive is still empty are retried on the next run.
-
-### nginx
-
-```
-server {
-    listen 80;
-    root /home/jeff/projects/iett/site;
-    index index.html;
-    gzip on;
-    gzip_types application/json;
-}
-```
-
-`build.py` swaps `site/data/` atomically, so nginx never serves a half-written build.
+Start the collector as early as possible: stop-level data only exists from the day collection begins.

@@ -30,3 +30,14 @@ def call(service, method, params=""):
     if len(result) == 0 and result.text:  # result may arrive as escaped XML text
         result = ET.fromstring(result.text)
     return [{_tag(f): f.text for f in row} for row in result.iter() if _tag(row) == "Table"]
+
+
+def fetch_stops():
+    """All stop lists: (line, direction) -> [(code, name, lat, lon)] in route order."""
+    rows = call("ibb/ibb.asmx", "DurakDetay_GYY", "<hat_kodu></hat_kodu>")
+    rows.sort(key=lambda r: int(r["SIRANO"]))
+    stops = {}
+    for r in rows:
+        stops.setdefault((r["HATKODU"], r["YON"]), []).append(
+            (r["DURAKKODU"], r["DURAKADI"], float(r["YKOORDINATI"]), float(r["XKOORDINATI"])))
+    return stops
